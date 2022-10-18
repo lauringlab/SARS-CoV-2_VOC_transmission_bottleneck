@@ -1,0 +1,251 @@
+### Author: Emily Bendall
+### Purpose: Get variant calls from alignment files (from Snakefile-BWA) with iVar.
+### This is designed for using the ARTIC primers for SARS-CoV-2 sequenced on Illumina.
+
+# ============================= How to run this pipeline ==========================
+
+# 1. Modify the parameters below as needed ("rule parameters").
+# 2. Load modules: module load Bioinformatics ivar python2.7-anaconda/2019.03 samtools/1.9 fastqc bowtie2/2.1.0 picard-tools bwa bedtools2 R
+# 3. Activate snakemake: conda activate snakemake
+# 4. Run job on Slurm: sbatch submit_variants.sbat -- Or run directly: snakemake -s Snakefile-variants -p --latency-wait 30 --cores 2
+
+# ============================= Configure run options here =============================
+
+SAMPLES, = glob_wildcards("data/ivar_output/consensus/{sample}.fa") # Where the pipeline will grab all of the IDs to run. Important to have changed the filenames first.
+
+rule all:
+    input:
+        expand ("data/ivar_output/consensus/{sample}.fa.bwt", sample=SAMPLES),
+        "all_variants_filtered"
+rule parameters:
+    params:
+        reference_fasta = "ncov_references/bwa_ref/nCov_WH1_ref.fasta", # fasta used for alignment
+        min_Q_score = 30, # minimum base quality for including base in mpileup
+        min_mapQ = 20, # minimum mapping quality for including base in mpileup
+        min_depth = 1, # minimum depth used in iVar variants
+        freq_threshold = 0.02, # minimum frequency to call variants
+        reference_gff = "ncov_references/WH1_ORFs.gff",
+        bed_file = "ncov_references/SARS-CoV-2_V4.1_primers_alt_overlap_sites.bed", # BED file for trimming primer sequences. Modified for ivar getmasked (added score parameter). See https://genome.ucsc.edu/FAQ/FAQformat.html#format1 and ivar documentation.
+        primer_info = "ncov_references/primer.tsv",
+        primer_fasta ="ncov_references/SARS-CoV-2.primer.fa"
+
+setup = rules.parameters.params
+
+# ============================= Here are the pipeline rules =============================
+
+rule bwa_build:
+    message:
+        """
+        =======================================================
+        index consensus sequence with bowtie2 build and Faidx
+        =======================================================
+        """
+    input:
+        'data/ivar_output/consensus/{sample}.fa' 
+        
+    output:
+        'data/ivar_output/consensus/{sample}.fa.bwt',
+
+    params:
+        'data/ivar_output/consensus/{sample}'
+    
+    shell:
+        """
+        bwa index {input} {params}
+        samtools faidx {input}
+        """
+
+rule create_primer_bam:
+    message:
+        """
+        =======================================================
+        Create primer bam file per sample ##Check these files
+        =======================================================
+        """
+    input:
+        sample_fasta_1= "data/ivar_output/consensus/{sample}.fa.bwt",
+
+    output:
+        "data/ivar_output/primer_bed/{sample}_1.bam"
+    params:
+        index = "data/ivar_output/consensus/{sample}.fa"
+
+        """
+        bwa mem -k 5 -T 16 {params.index} {setup.primer_fasta} | samtools view -bS -F 4 | samtools sort -o {output}
+        """
+
+rule create_bed:
+    message:
+        """
+        =======================================================
+        Create primer bed file per sample
+        =======================================================
+        """
+    input:
+        bam1 = "data/ivar_output/primer_bed/{sample}_1.bam",
+        bam2 = "data/ivar_output/primer_bed/{sample}_2.bam"
+
+    output:
+       bed1 = "data/ivar_output/primer_bed/{sample}_1.bed",
+       bed2 = "data/ivar_output/primer_bed/{sample}_2.bed"
+    shell:
+        """
+        bedtools bamtobed -i {input.bam1} > {output.bed1}
+        bedtools bamtobed -i {input.bam2} > {output.bed2}
+        """
+
+rule call_variants_in_primer:
+    message:
+        """
+        =======================================================
+        Call variants in primers to get mismatches
+        =======================================================
+        """
+    input:
+        primer_bam_1 = "data/ivar_output/primer_bed/{sample}_1.bam",
+        primer_bam_2 = "data/ivar_output/primer_bed/{sample}_2.bam",
+        sample_consensus = 'data/ivar_output/consensus/{sample}.fa'   
+    output:
+        mismatch_1 = "data/ivar_output/primer_mismatches/{sample}_1.tsv",
+        mismatch_2 = "data/ivar_output/primer_mismatches/{sample}_2.tsv"
+
+    shell:
+        """
+        samtools mpileup -aa -A -d 100000 --reference {input.sample_consensus} -Q {setup.min_Q_score} -q {setup.min_mapQ} -F 0 {input.primer_bam_1} | ivar variants -p {output.mismatch_1} -t {setup.freq_threshold}
+        samtools mpileup -aa -A -d 100000 --reference {input.sample_consensus} -Q {setup.min_Q_score} -q {setup.min_mapQ} -F 0 {input.primer_bam_1} | ivar variants -p {output.mismatch_2} -t {setup.freq_threshold}
+        """
+
+
+# may need to modify below to account for filenames, and correct inputs
+rule mask:
+    message:
+        """
+        =======================================================
+        Mask primer segments with mismatches to consensus
+        =======================================================
+        """
+    input:
+        mismatch_tsv_1 = "data/ivar_output/primer_mismatches/{sample}_1.tsv",
+        mismatch_tsv_2 = "data/ivar_output/primer_mismatches/{sample}_2.tsv",
+        sample_bed_1 = "/data/ivar_output/primer_bed/{sample}_1.bed",
+        sample_bed_2 = "/data/ivar_output/primer_bed/{sample}_2.bed",
+        
+    output:
+        mask_1= "data/ivar_output/mask/{sample}_1_masked_primer_names.txt",
+        mask_2= "data/ivar_output/mask/{sample}_2_masked_primer_names.txt"
+    shell:
+        """
+        ivar getmasked -i {input.mismatch_tsv_1} -b {input.sample_bed_1}  -f {setup.primer_info} -p {output.mask_1}
+        ivar getmasked -i {input.mismatch_tsv_2} -b {input.sample_bed_2}  -f {setup.primer_info} -p {output.mask_2}
+        """"
+rule remove_masked:
+    message:
+        """
+        =======================================================
+        Remove reads with mismatches to consensus
+        =======================================================
+        """
+    input:
+        bam_file_1 = "data/aligned_output/primertrim_sorted/{sample}_1.removed.primertrim.sorted.bam",
+        bam_file_2 = "data/aligned_output/primertrim_sorted/{sample}_2.removed.primertrim.sorted.bam",
+        mask_file = "data/ivar_output/mask/{sample}_1_masked_primer_names.txt",
+        mask_file = "data/ivar_output/mask/{sample}_1_masked_primer_names.txt",
+    output:
+        bam_1 ="data/ivar_output/removed/{sample}_1.masked.sorted.bam", 
+        bam_2="data/ivar_output/removed/{sample}_2.masked.sorted.bam", 
+
+    params:
+        remove_sites_1 = "data/ivar_output/removed/{sample}_1.masked",
+        remove_sites_2 = "data/ivar_output/removed/{sample}_2.masked",
+        temp_1 = "data/ivar_output/removed/{sample}_1.tmp",
+        temp_2 = "data/ivar_output/removed/{sample}_2.tmp",
+    
+    
+    shell:
+        """
+        ivar removereads -i {input.bam_file_1} -p {params.remove_sites_1} -t {input.mask_file_1} -b {setup.bed_file}  
+        samtools sort -T {params.temp_1} -o {output} {params.remove_sites_1}.bam        
+        samtools index {output.bam_1}
+        
+        ivar removereads -i {input.bam_file_2} -p {params.remove_sites_2} -t {input.mask_file_2} -b {setup.bed_file}  
+        samtools sort -T {params.temp_2} -o {output} {params.remove_sites_2}.bam        
+        samtools index {output.bam_2}
+        """
+
+rule variants_post_removal:
+    message:
+        """
+        =======================================================
+        Call variants with iVar after mismatch removal
+        =======================================================
+        """
+    input:
+        bam_1="data/ivar_output/removed/{sample}_1.masked.sorted.bam",
+        bam_2="data/ivar_output/removed/{sample}_2.masked.sorted.bam",
+
+    output:
+        variants_1="data/ivar_output/variants_final/{sample}_1.variants.tsv",
+        variants_2="data/ivar_output/variants_final/{sample}_2.variants.tsv",
+
+    params:
+        variants_1="data/ivar_output/variants_final/{sample}_1.variants",
+        variants_2="data/ivar_output/variants_final/{sample}_2.variants",
+
+    shell:
+        """
+        samtools mpileup -aa -A -d 100000 -B -Q 0 -q {setup.min_mapQ} --reference {setup.reference_fasta} {input.bam_1} | ivar variants -p {params.variants_1} -q {setup.min_Q_score} -t {setup.freq_threshold} -r {setup.reference_fasta} -g {setup.reference_gff} 
+        samtools mpileup -aa -A -d 100000 -B -Q 0 -q {setup.min_mapQ} --reference {setup.reference_fasta} {input.bam_2} | ivar variants -p {params.variants_2} -q {setup.min_Q_score} -t {setup.freq_threshold} -r {setup.reference_fasta} -g {setup.reference_gff} 
+
+        """
+
+rule merge_variants: 
+    message:
+        """
+        =======================================================
+        Merge duplicate sequencing run variants with iVar
+        =======================================================
+        """      
+    input:
+        variants_1="data/ivar_output/variants_final/{sample}_1.variants.tsv",
+        variants_2="data/ivar_output/variants_final/{sample}_2.variants.tsv",
+    output:
+        'data/ivar_output/variants_final/{sample}.merged.tsv'
+    params: 
+        'data/ivar_output/variants_final/{sample}.merged'
+    shell:
+        'ivar filtervariants -p  {params} {input.sample1} {input.sample2}'
+
+
+rule filter_variants:
+    message:
+         """
+        =======================================================
+        Filter variants in R 
+        =======================================================
+        """
+    input:
+        sample= "data/ivar_output/variants_final/{sample}.merged.tsv",
+        masks_sites = "ncov_references/problematic_sites_v7.txt"
+    output:
+        "data/ivar_output/variants_final/{sample}.filtered"
+    script:
+        "filter_ivar_variants.R"
+
+
+rule collapse_all_variants:
+     message:
+         """
+          =======================================================
+          Collapse variants from all samples into one file
+          =======================================================
+         """
+     input:
+          expand ("data/ivar_output/variants_final/{sample}.filtered", sample=SAMPLES)
+        
+     output:
+          final ="all_variants_filtered",
+          
+     shell:
+          """          
+          awk 'NR == 1 || FNR > 1'  {input}  >  {output.final}
+          """
