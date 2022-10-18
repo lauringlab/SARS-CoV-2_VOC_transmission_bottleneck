@@ -2,7 +2,7 @@
 
 This repository holds information related to our paper on transmission bottlenecks in SARS-CoV-2 variant of concern infections. Below is a map of the repository structure
 
-##Overview
+# Overview
 
 ````
 -Pipeline: Contains iVAR pipelines for processing fastq data and calling iSNV.
