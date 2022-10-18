@@ -4,7 +4,7 @@ This repository holds information related to our paper on transmission bottlenec
 
 # Overview
 
-````
+```
 -Pipeline: Contains iVAR pipelines for processing fastq data and calling iSNV.
 -ncov_references: Contains primer information and reference information  (fasta, bed) used 	
 in the iVAR pipelines. 
