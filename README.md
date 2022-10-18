@@ -11,6 +11,7 @@ in the iVAR pipelines.
 -Scripts: Contains scripts for analyzing iSNV and household metadata as well as generating the figures
 -Processed_data:Contains input files for the scripts, including iSNV, consensus sequences, and metadata
 -Results: Contains a subset of results from above scripts that are used as inputs for other processes. Folder that all other results will be deposited in after running the above scripts.
+
 ```
 
 # Contact
