@@ -2,6 +2,7 @@ library (dplyr)
 library (ggplot2)
 library (cowplot)
 library (scico)
+library (patchwork)
 
 ### Sequnce overview data ###
 
@@ -98,4 +99,8 @@ cov_plot(Coverage, title = "") -> coverage.plot.all
 
 # replicate iSNV frequency
 snv <- read.table ("Processed_data/all_variants_filtered", header=T)
-ggplot (snv, aes (ALT_FREQ_1 ALT_FREQ_2))+ geom_point()+ xlab ("iSNV frequency in replicate 1")+ ylab ("iSNV frequency in replicate 2")+theme_bw()
+
+snv_rep_plot <- ggplot (snv, aes (ALT_FREQ_1, ALT_FREQ_2))+ geom_point()+ xlab ("iSNV frequency in replicate 1")+ ylab ("iSNV frequency in replicate 2")+theme_bw()
+plot_insert <- ggplot (snv, aes (ALT_FREQ_1, ALT_FREQ_2))+ geom_point(size=0.3)+ xlab ("")+ ylab ("")+theme_bw()+xlim(0,.1)+ylim (0,0.1)
+
+snv_rep_plot + inset_element(plot_insert, 0.01, .6, 0.4, .99)
